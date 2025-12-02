@@ -14,10 +14,12 @@ type Cargo struct {
 	mu        sync.Mutex
 	batch     []any
 	batchSize int
-	timeout   time.Duration
-	handler   handlerFunc
-	ticker    *time.Ticker
-	done      chan struct{}
+
+	timeout time.Duration
+	handler handlerFunc
+
+	done    chan struct{}
+	flushCh chan struct{}
 }
 
 func NewCargo(size int, timeout time.Duration, fn handlerFunc) (*Cargo, error) {
@@ -36,7 +38,6 @@ func NewCargo(size int, timeout time.Duration, fn handlerFunc) (*Cargo, error) {
 		batchSize: size,
 		timeout:   timeout,
 		handler:   fn,
-		ticker:    time.NewTicker(timeout),
 		done:      make(chan struct{}),
 	}
 
@@ -46,43 +47,42 @@ func NewCargo(size int, timeout time.Duration, fn handlerFunc) (*Cargo, error) {
 }
 
 func (c *Cargo) run() {
-	sizeFlush := len(c.batch) >= c.batchSize
-	if sizeFlush {
-		err := c.Flush()
-		c.ticker.Reset(c.timeout)
-		if err != nil {
-			log.Printf("cargo: failed to flush batch: %v", err)
-		}
-	}
+	ticker := time.NewTicker(c.timeout)
+	defer ticker.Stop()
 	for {
 		select {
-		case <-c.ticker.C:
+		case <-ticker.C:
 			log.Println("cargo: ticker fired, flushing batch")
 			_ = c.Flush()
-			c.ticker.Reset(c.timeout)
+		case <-c.flushCh:
+			_ = c.Flush()
+			ticker.Reset(c.timeout)
 		case <-c.done:
-			log.Println("cargo: shutting down ticker")
-			c.ticker.Stop()
+			_ = c.Flush()
 			return
 		}
 	}
 }
 
-// Add adds one item, flushes on size or timeout.
+// Add adds one item
 func (c *Cargo) Add(item any) error {
 	c.mu.Lock()
-	c.batch = append(c.batch, item)
-	//batchLen := len(c.batch)
-	//shouldFlush := batchLen >= c.batchSize
-	c.mu.Unlock()
+	defer c.mu.Unlock()
 
-	//if shouldFlush {
-	//	log.Printf("cargo: batch size reached, flushing [%d items] and resetting timer", batchLen)
-	//	c.ticker.Reset(c.timeout)
-	//	tickerNow := <-c.ticker.C
-	//	log.Printf("time has been resetted: %v", tickerNow)
-	//	return c.Flush()
-	//}
+	select {
+	case <-c.done:
+		return fmt.Errorf("cargo closed")
+	default:
+	}
+
+	c.batch = append(c.batch, item)
+	if len(c.batch) >= c.batchSize {
+		select {
+		case c.flushCh <- struct{}{}:
+			log.Println("cargo: flushing batch")
+		default:
+		}
+	}
 	return nil
 }
 

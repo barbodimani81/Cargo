@@ -26,14 +26,8 @@ type Cargo struct {
 }
 
 func NewCargo(size int, timeout time.Duration, fn handlerFunc) (*Cargo, error) {
-	if size <= 0 {
-		return nil, fmt.Errorf("batch size must be greater than zero")
-	}
-	if timeout <= 0 {
-		return nil, fmt.Errorf("timeout must be greater than zero")
-	}
-	if fn == nil {
-		return nil, fmt.Errorf("handler func cannot be empty")
+	if err := configValidation(size, timeout, fn); err != nil {
+		return nil, err
 	}
 
 	c := &Cargo{
@@ -54,20 +48,26 @@ func NewCargo(size int, timeout time.Duration, fn handlerFunc) (*Cargo, error) {
 func (c *Cargo) run() {
 	ticker := time.NewTicker(c.timeout)
 	defer ticker.Stop()
-	defer close(c.stopped)
+	//defer close(c.stopped)
 	for {
 		select {
 		// timeout flush
 		case <-ticker.C:
 			log.Println("cargo: ticker fired, flushing batch")
-			_ = c.Flush()
+			if err := c.Flush(); err != nil {
+				log.Printf("cargo: failed to timeout flush batch: %v", err)
+			}
 		// size-based flush
 		case <-c.flushCh:
-			_ = c.Flush()
+			if err := c.Flush(); err != nil {
+				log.Printf("cargo: failed to size flush batch: %v", err)
+			}
 			ticker.Reset(c.timeout)
 		// closed channel
 		case <-c.done:
-			_ = c.Flush()
+			if err := c.Flush(); err != nil {
+				log.Printf("cargo: failed to close channel: %v", err)
+			}
 			return
 		}
 	}
@@ -117,5 +117,18 @@ func (c *Cargo) Close() error {
 		log.Println("cargo: closing")
 	})
 	<-c.stopped
+	return nil
+}
+
+func configValidation(size int, timeout time.Duration, fn handlerFunc) error {
+	if size <= 0 {
+		return fmt.Errorf("batch size must be greater than zero")
+	}
+	if timeout <= 0 {
+		return fmt.Errorf("timeout must be greater than zero")
+	}
+	if fn == nil {
+		return fmt.Errorf("handler func cannot be empty")
+	}
 	return nil
 }

@@ -10,6 +10,7 @@ import (
 
 	"final/cargo"
 	"final/generator"
+	_ "final/mongo"
 )
 
 func main() {
@@ -70,3 +71,7 @@ func main() {
 	elapsed := time.Since(start)
 	log.Printf("Duration: %v", elapsed)
 }
+
+// mongo
+//uri := "mongodb://mongo:27017"
+//mong

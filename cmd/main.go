@@ -27,6 +27,7 @@ func main() {
 	// 1. generator
 	log.Printf("generating %d objects\n", *objectsCount)
 	ch, err := generator.ItemGenerator(*objectsCount)
+
 	if err != nil {
 		log.Fatalf("generator error: %v", err)
 	}

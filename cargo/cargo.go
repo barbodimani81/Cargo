@@ -39,6 +39,7 @@ func NewCargo(size int, timeout time.Duration, fn handlerFunc) (*Cargo, error) {
 		timeout:   timeout,
 		handler:   fn,
 		done:      make(chan struct{}),
+		flushCh:   make(chan struct{}),
 	}
 
 	log.Printf("cargo: initialized with batch size %d and timeout %v", size, timeout)
@@ -51,12 +52,15 @@ func (c *Cargo) run() {
 	defer ticker.Stop()
 	for {
 		select {
+		// timeout flush
 		case <-ticker.C:
 			log.Println("cargo: ticker fired, flushing batch")
 			_ = c.Flush()
+		// size-based flush
 		case <-c.flushCh:
 			_ = c.Flush()
 			ticker.Reset(c.timeout)
+		// closed channel
 		case <-c.done:
 			_ = c.Flush()
 			return
@@ -104,7 +108,10 @@ func (c *Cargo) Flush() error {
 
 // Close stops the ticker and flushes any remaining items.
 func (c *Cargo) Close() error {
-	log.Println("cargo: closing")
-	close(c.done)
-	return c.Flush()
+	var once sync.Once
+	once.Do(func() {
+		close(c.done)
+		log.Println("cargo: closing")
+	})
+	return nil
 }

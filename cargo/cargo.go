@@ -3,86 +3,86 @@ package cargo
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 )
 
 type handlerFunc func(ctx context.Context, batch []any) error
 
-type Config struct {
-	BatchSize   int
-	Timeout     time.Duration
-	HandlerFunc handlerFunc
-}
-
 type Cargo struct {
-	mu    sync.Mutex
-	batch []any
-	cfg   Config
+	mu        sync.Mutex
+	batch     []any
+	batchSize int
+	timeout   time.Duration
+	handler   handlerFunc
+	ticker    *time.Ticker
+	done      chan struct{}
 }
-
-// --- validation helpers ---
-
-func BatchSizeValidation(size int) error {
-	if size <= 0 {
-		return fmt.Errorf("batch size must be greater than zero")
-	}
-	return nil
-}
-
-func TimeoutValidation(timeout time.Duration) error {
-	if timeout <= 0 {
-		return fmt.Errorf("timeout must be greater than zero")
-	}
-	return nil
-}
-
-// --- constructor ---
 
 func NewCargo(size int, timeout time.Duration, fn handlerFunc) (*Cargo, error) {
-	if err := BatchSizeValidation(size); err != nil {
-		return nil, err
+	if size <= 0 {
+		return nil, fmt.Errorf("batch size must be greater than zero")
 	}
-	if err := TimeoutValidation(timeout); err != nil {
-		return nil, err
+	if timeout <= 0 {
+		return nil, fmt.Errorf("timeout must be greater than zero")
 	}
 	if fn == nil {
 		return nil, fmt.Errorf("handler func cannot be empty")
 	}
 
-	return &Cargo{
-		batch: make([]any, 0, size),
-		cfg: Config{
-			BatchSize:   size,
-			Timeout:     timeout,
-			HandlerFunc: fn,
-		},
-	}, nil
+	c := &Cargo{
+		batch:     make([]any, 0, size),
+		batchSize: size,
+		timeout:   timeout,
+		handler:   fn,
+		ticker:    time.NewTicker(timeout),
+		done:      make(chan struct{}),
+	}
+
+	log.Printf("cargo: initialized with batch size %d and timeout %v", size, timeout)
+	go c.run()
+	return c, nil
+}
+
+func (c *Cargo) run() {
+	sizeFlush := len(c.batch) >= c.batchSize
+	if sizeFlush {
+		err := c.Flush()
+		c.ticker.Reset(c.timeout)
+		if err != nil {
+			log.Printf("cargo: failed to flush batch: %v", err)
+		}
+	}
+	for {
+		select {
+		case <-c.ticker.C:
+			log.Println("cargo: ticker fired, flushing batch")
+			_ = c.Flush()
+			c.ticker.Reset(c.timeout)
+		case <-c.done:
+			log.Println("cargo: shutting down ticker")
+			c.ticker.Stop()
+			return
+		}
+	}
 }
 
 // Add adds one item, flushes on size or timeout.
 func (c *Cargo) Add(item any) error {
 	c.mu.Lock()
-	wasEmpty := len(c.batch) == 0
-
 	c.batch = append(c.batch, item)
-	shouldFlush := len(c.batch) >= c.cfg.BatchSize
+	//batchLen := len(c.batch)
+	//shouldFlush := batchLen >= c.batchSize
 	c.mu.Unlock()
 
-	// size-based flush
-	if shouldFlush {
-		return c.Flush()
-	}
-
-	// timeout-based: only schedule when batch transitions from empty -> non-empty
-	if wasEmpty {
-		timeout := c.cfg.Timeout
-		go func() {
-			time.Sleep(timeout)
-			_ = c.Flush()
-		}()
-	}
-
+	//if shouldFlush {
+	//	log.Printf("cargo: batch size reached, flushing [%d items] and resetting timer", batchLen)
+	//	c.ticker.Reset(c.timeout)
+	//	tickerNow := <-c.ticker.C
+	//	log.Printf("time has been resetted: %v", tickerNow)
+	//	return c.Flush()
+	//}
 	return nil
 }
 
@@ -95,14 +95,16 @@ func (c *Cargo) Flush() error {
 	}
 
 	b := c.batch
-	// reset with capacity BatchSize
-	c.batch = make([]any, 0, c.cfg.BatchSize)
+	c.batch = make([]any, 0, c.batchSize)
 	c.mu.Unlock()
 
-	return c.cfg.HandlerFunc(context.Background(), b)
+	log.Printf("cargo: flushing %d items", len(b))
+	return c.handler(context.Background(), b)
 }
 
-// Close is optional; just flushes any remaining items.
+// Close stops the ticker and flushes any remaining items.
 func (c *Cargo) Close() error {
+	log.Println("cargo: closing")
+	close(c.done)
 	return c.Flush()
 }

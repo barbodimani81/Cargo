@@ -20,6 +20,9 @@ type Cargo struct {
 
 	done    chan struct{}
 	flushCh chan struct{}
+	stopped chan struct{}
+
+	closeOnce sync.Once
 }
 
 func NewCargo(size int, timeout time.Duration, fn handlerFunc) (*Cargo, error) {
@@ -39,7 +42,8 @@ func NewCargo(size int, timeout time.Duration, fn handlerFunc) (*Cargo, error) {
 		timeout:   timeout,
 		handler:   fn,
 		done:      make(chan struct{}),
-		flushCh:   make(chan struct{}),
+		flushCh:   make(chan struct{}, 1),
+		stopped:   make(chan struct{}),
 	}
 
 	log.Printf("cargo: initialized with batch size %d and timeout %v", size, timeout)
@@ -50,6 +54,7 @@ func NewCargo(size int, timeout time.Duration, fn handlerFunc) (*Cargo, error) {
 func (c *Cargo) run() {
 	ticker := time.NewTicker(c.timeout)
 	defer ticker.Stop()
+	defer close(c.stopped)
 	for {
 		select {
 		// timeout flush
@@ -106,12 +111,11 @@ func (c *Cargo) Flush() error {
 	return c.handler(context.Background(), b)
 }
 
-// Close stops the ticker and flushes any remaining items.
 func (c *Cargo) Close() error {
-	var once sync.Once
-	once.Do(func() {
+	c.closeOnce.Do(func() {
 		close(c.done)
 		log.Println("cargo: closing")
 	})
+	<-c.stopped
 	return nil
 }

@@ -10,50 +10,23 @@
 
 ---
 
-## Project is Dockerized on the same network
-
----
-
 #### Example:
-``` Go
-ch := make(chan []byte, 1024)
-
-// Producer
-go func() {
-	for i := 0; i < 1000; i++ {
-		ch <- generate()
-	}
-	close(ch)
-}()
-
-// Consumer(s)
-for i := 0; i < 4; i++ {
-	go func() {
-		for obj := range ch {
-			consume(obj)
-		}
-	}()
+```go
+for {
+    select {
+    // timeout flush
+    case <-ticker.C:
+        log.Println("cargo: ticker fired, flushing batch")
+        _ = c.Flush()
+    // size-based flush
+    case <-c.flushCh:
+        _ = c.Flush()
+        ticker.Reset(c.timeout)
+    // closed channel
+    case <-c.done:
+        _ = c.Flush()
+        return
+    }
 }
 ```
 
-#### Example-2:
-
-``` Go
-objects := make(chan []byte, 1024)
-
-// Consumer
-go func() {
-	for obj := range objects {
-		consume(obj) // DB, file, network, etc.
-	}
-}()
-
-// Producer
-// --object-count = n (eg 100,000)
-go func() {
-	_ = generator.GenerateStream(n, objects)
-	close(objects)
-}()
-
-select {}
-```

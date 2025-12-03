@@ -1,9 +1,7 @@
 package generator
 
 import (
-	"encoding/json"
-	"log"
-	"math/rand"
+	"math/rand/v2"
 )
 
 type Item struct {
@@ -12,23 +10,19 @@ type Item struct {
 	Status bool `json:"status"`
 }
 
-func ItemGenerator(n int) (<-chan []byte, error) {
-	ch := make(chan []byte)
+func ItemGenerator(n int) <-chan Item {
+	ch := make(chan Item)
 
 	go func() {
 		defer close(ch)
 		for i := 0; i < n; i++ {
 			item := Item{
-				ID:     rand.Intn(1000000),
-				Age:    rand.Intn(80),
-				Status: rand.Intn(2) == 1,
+				ID:     rand.IntN(1000000),
+				Age:    rand.IntN(80),
+				Status: rand.IntN(2) == 1,
 			}
-			obj, err := json.Marshal(item)
-			if err != nil {
-				log.Fatalf("cannot marshal: %v", err)
-			}
-			ch <- obj
+			ch <- item
 		}
 	}()
-	return ch, nil
+	return ch
 }

@@ -3,46 +3,82 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"final/cargo"
 	"final/generator"
-	_ "final/mongo"
+	"final/mongodb"
 )
 
 func main() {
 	start := time.Now()
-
 	objectsCount := flag.Int("count", 100, "number of objects to generate")
 	batchSize := flag.Int("batch-size", 10, "batch size")
 	timeout := flag.Duration("timeout", 2*time.Second, "flush timeout")
 	workers := flag.Int("workers", 4, "number of worker goroutines")
+	mongoURI := flag.String("mongo-uri", getEnv("MONGO_URI", "mongodb://mongodb:27017"), "MongoDB connection URI")
 	flag.Parse()
 
 	var generated int64
-	var flushed int64
 
-	// 1. generator
-	log.Printf("generating %d objects\n", *objectsCount)
-	ch, err := generator.ItemGenerator(*objectsCount)
-
+	// mongodb new client and database configurations
+	log.Printf("connecting to MongoDB at %s\n", *mongoURI)
+	mongoClient, err := mongodb.NewClient(*mongoURI)
 	if err != nil {
-		log.Fatalf("generator error: %v", err)
+		log.Fatalf("mongodb error: %v", err)
+	}
+	defer func() {
+		_ = mongoClient.Disconnect(context.Background())
+	}()
+	// defining new mongo collection
+	coll := mongodb.NewRepo(mongoClient)
+	log.Println("MongoDB connected successfully")
+
+	// generator putting items in channel
+	log.Printf("generating %d objects\n", *objectsCount)
+	ch := generator.ItemGenerator(*objectsCount)
+
+	// cargo handler connection to mongo
+	handler := func(ctx context.Context, batch []any) error {
+		if len(batch) == 0 {
+			return nil
+		}
+		docs := make([]any, len(batch))
+		for i, v := range batch {
+			item, ok := v.(generator.Item)
+			if !ok {
+				return fmt.Errorf("invalid format: expected generator.Item, got %T", v)
+			}
+			docs[i] = item
+		}
+		// mongo insertion
+		log.Printf("inserting batch of %d items\n", len(docs))
+		_, err := coll.InsertMany(ctx, docs)
+		if err != nil {
+			log.Printf("ERROR: insert failed: %v", err)
+			return fmt.Errorf("insert docs to mongo failed: %v", err)
+		}
+		log.Printf("successfully inserted %d items\n", len(docs))
+		return nil
 	}
 
-	// 2. cargo
-	c, err := cargo.NewCargo(*batchSize, *timeout, func(ctx context.Context, batch []any) error {
-		atomic.AddInt64(&flushed, int64(len(batch)))
-		return nil
-	})
+	// cargo initialize
+	c, err := cargo.NewCargo(*batchSize, *timeout, handler)
 	if err != nil {
 		log.Fatalf("cargo error: %v", err)
 	}
+	defer func() {
+		if err := c.Close(); err != nil {
+			log.Printf("close cargo failed: %v", err)
+		}
+	}()
 
-	// 3. worker pool
+	// worker pool for add to cargo and flush
 	var wg sync.WaitGroup
 	wg.Add(*workers)
 
@@ -57,21 +93,19 @@ func main() {
 			}
 		}()
 	}
-
 	wg.Wait()
 
-	// 4. final flush
-	_ = c.Flush()
-
-	// 5. print totals
+	// print total generated
 	log.Printf("Generated items: %d", atomic.LoadInt64(&generated))
-	log.Printf("Flushed items:   %d", atomic.LoadInt64(&flushed))
 
 	// duration
 	elapsed := time.Since(start)
-	log.Printf("Duration: %v", elapsed)
+	log.Printf("Total duration: %v", elapsed)
 }
 
-// mongo
-//uri := "mongodb://mongo:27017"
-//mong
+func getEnv(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
+}

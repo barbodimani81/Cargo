@@ -3,7 +3,6 @@ package cargo
 import (
 	"context"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 )
@@ -18,10 +17,10 @@ type Cargo struct {
 	timeout time.Duration
 	handler handlerFunc
 
-	done    chan struct{}
-	flushCh chan struct{}
-	stopped chan struct{}
-
+	done      chan struct{}
+	flushCh   chan struct{}
+	stopped   chan struct{}
+	flushing  sync.Mutex
 	closeOnce sync.Once
 }
 
@@ -40,7 +39,6 @@ func NewCargo(size int, timeout time.Duration, fn handlerFunc) (*Cargo, error) {
 		stopped:   make(chan struct{}),
 	}
 
-	log.Printf("cargo: initialized with batch size %d and timeout %v", size, timeout)
 	go c.run()
 	return c, nil
 }
@@ -48,26 +46,17 @@ func NewCargo(size int, timeout time.Duration, fn handlerFunc) (*Cargo, error) {
 func (c *Cargo) run() {
 	ticker := time.NewTicker(c.timeout)
 	defer ticker.Stop()
-	//defer close(c.stopped)
+	defer close(c.stopped)
 	for {
 		select {
-		// timeout flush
 		case <-ticker.C:
-			log.Println("cargo: ticker fired, flushing batch")
-			if err := c.Flush(); err != nil {
-				log.Printf("cargo: failed to timeout flush batch: %v", err)
-			}
-		// size-based flush
-		case <-c.flushCh:
-			if err := c.Flush(); err != nil {
-				log.Printf("cargo: failed to size flush batch: %v", err)
-			}
+			_ = c.flush(context.Background())
 			ticker.Reset(c.timeout)
-		// closed channel
+		case <-c.flushCh:
+			_ = c.flush(context.Background())
+			ticker.Reset(c.timeout)
 		case <-c.done:
-			if err := c.Flush(); err != nil {
-				log.Printf("cargo: failed to close channel: %v", err)
-			}
+			_ = c.flush(context.Background())
 			return
 		}
 	}
@@ -88,15 +77,17 @@ func (c *Cargo) Add(item any) error {
 	if len(c.batch) >= c.batchSize {
 		select {
 		case c.flushCh <- struct{}{}:
-			log.Println("cargo: flushing batch")
 		default:
 		}
 	}
 	return nil
 }
 
-// Flush flushes the current batch.
-func (c *Cargo) Flush() error {
+// flush is the internal flush with proper synchronization
+func (c *Cargo) flush(ctx context.Context) error {
+	c.flushing.Lock()
+	defer c.flushing.Unlock()
+
 	c.mu.Lock()
 	if len(c.batch) == 0 {
 		c.mu.Unlock()
@@ -107,14 +98,17 @@ func (c *Cargo) Flush() error {
 	c.batch = make([]any, 0, c.batchSize)
 	c.mu.Unlock()
 
-	log.Printf("cargo: flushing %d items", len(b))
-	return c.handler(context.Background(), b)
+	return c.handler(ctx, b)
+}
+
+// Flush flushes the current batch (public API)
+func (c *Cargo) Flush(ctx context.Context) error {
+	return c.flush(ctx)
 }
 
 func (c *Cargo) Close() error {
 	c.closeOnce.Do(func() {
 		close(c.done)
-		log.Println("cargo: closing")
 	})
 	<-c.stopped
 	return nil

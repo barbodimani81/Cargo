@@ -16,11 +16,10 @@ import (
 )
 
 func main() {
-	start := time.Now()
-	objectsCount := flag.Int("count", 100, "number of objects to generate")
-	batchSize := flag.Int("batch-size", 10, "batch size")
+	objectsCount := flag.Int("count", 1000000, "number of objects to generate")
+	batchSize := flag.Int("batch-size", 10000, "batch size")
 	timeout := flag.Duration("timeout", 2*time.Second, "flush timeout")
-	workers := flag.Int("workers", 4, "number of worker goroutines")
+	workers := flag.Int("workers", 6, "number of worker goroutines")
 	mongoURI := flag.String("mongo-uri", getEnv("MONGO_URI", "mongodb://mongodb:27017"), "MongoDB connection URI")
 	flag.Parse()
 
@@ -40,6 +39,7 @@ func main() {
 	log.Println("MongoDB connected successfully")
 
 	// generator putting items in channel
+	start := time.Now()
 	log.Printf("generating %d objects\n", *objectsCount)
 	ch := generator.ItemGenerator(*objectsCount)
 
@@ -76,6 +76,9 @@ func main() {
 		if err := c.Close(); err != nil {
 			log.Printf("close cargo failed: %v", err)
 		}
+		// duration after all inserts complete
+		elapsed := time.Since(start)
+		log.Printf("Total duration: %v", elapsed)
 	}()
 
 	// worker pool for add to cargo and flush
@@ -94,13 +97,7 @@ func main() {
 		}()
 	}
 	wg.Wait()
-
-	// print total generated
 	log.Printf("Generated items: %d", atomic.LoadInt64(&generated))
-
-	// duration
-	elapsed := time.Since(start)
-	log.Printf("Total duration: %v", elapsed)
 }
 
 func getEnv(key, defaultValue string) string {
